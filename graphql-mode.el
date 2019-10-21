@@ -6,6 +6,7 @@
 ;; Keywords: languages
 ;; Package-Requires: ((emacs "24.3"))
 
+
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
 ;; the Free Software Foundation, either version 3 of the License, or
@@ -73,6 +74,9 @@
   :tag "GraphQL"
   :type 'list
   :group 'graphql)
+
+(defvar graphql-variables nil
+  "Used to hold the variable map for the current buffer.")
 
 (defun graphql-locate-config (dir)
   "Locate a graphql config starting in DIR."
@@ -168,6 +172,23 @@ Please install it and try again."))
                   (> (car (syntax-ppss)) 0)))
     (forward-line 1)))
 
+(defun graphql-next-query ()
+  (interactive)
+  (end-of-line)
+  (re-search-forward "^query\\|^mutation\\|^subscription" nil t))
+
+(defun graphql-previous-query ()
+  (interactive)
+  (beginning-of-line)
+  (re-search-backward "^query\\|^mutation\\|subscription" nil t))
+
+(defun graphql-print-path ()
+  (interactive)
+  (let* ((path (plist-get (json-path-to-position (point)) :path))
+         (interned-path (mapcar (lambda (item) (if (stringp item) (intern item) item)) path)))
+    (kill-new (format "%s" interned-path))
+    (print interned-path)))
+
 (defun graphql-current-query ()
   "Return the current query/mutation/subscription definition."
   (let ((start
@@ -205,17 +226,27 @@ Please install it and try again."))
         nil
       (replace-regexp-in-string "[({].*" "" (nth 1 tokens)))))
 
-(defun graphql-current-variables (filename)
-  "Return the current variables contained in FILENAME."
-  (if (and filename
-           (not (string-equal filename ""))
-           (not (file-directory-p filename))
-           (file-exists-p filename))
-      (condition-case nil
-          (progn (get-buffer-create (find-file-noselect filename))
-                 (json-read-file filename))
-        (error nil))
-    nil))
+(defun graphql-current-binders ()
+  (let ((next-query-pos (save-excursion (graphql-next-query)))
+        binders)
+    (save-excursion
+      (print next-query-pos)
+      (while (re-search-forward "#[[:space:]]*\\$\\([[:alpha:]]*\\)[[:space:]]*:[[:space:]]*\\(.*\\)" next-query-pos t)
+        (push (cons (intern (match-string-no-properties 1))
+                    (car (read-from-string (match-string-no-properties 2))))
+              binders))
+      binders)))
+
+(defun json-path-follow (json path)
+  (-reduce-from (lambda (acc it)
+                  (cond ((numberp it) (elt acc it))
+                        (t (cdr (assq it acc)))))
+                json path))
+
+(defun graphql-bind-variables (binders json)
+  (cl-loop for (var . path) in binders do
+           ;; (add-to-list 'graphql-variables (cons var (json-path-follow json path)))
+           (setf (alist-get var graphql-variables) (json-path-follow json path))))
 
 (define-minor-mode graphql-query-response-mode
   "Allows GraphQL query response buffer to be closed with (q)"
@@ -232,10 +263,10 @@ Please install it and try again."))
     (let ((graphql-url url)
           (graphql-variables-file var))
 
-      (let* ((query (buffer-substring-no-properties (point-min) (point-max)))
+      (let* ((query (graphql-current-query))
              (operation (graphql-current-operation))
-             (variables (graphql-current-variables var))
-             (response (graphql--query query operation variables)))
+             (binders (graphql-current-binders))
+             (response (graphql--query query operation graphql-variables)))
         (with-current-buffer-window
          "*GraphQL*" 'display-buffer-pop-up-window nil
          (erase-buffer)
@@ -243,6 +274,8 @@ Please install it and try again."))
            (json-mode))
          (insert (json-encode (request-response-data response)))
          (json-pretty-print-buffer)
+         (goto-char (point-min))
+         (graphql-bind-variables binders (json-read))
          (goto-char (point-max))
          (insert "\n\n"
                  (propertize (request-response--raw-header response)
