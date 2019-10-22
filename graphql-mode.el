@@ -261,6 +261,22 @@ Please install it and try again."))
             (define-key map (kbd "q") 'quit-window)
             map))
 
+(defun graphql-resolve-imports ()
+  "Resolves all import statements."
+  (let ((buffer (current-buffer))
+        file
+        cwd)
+   (with-temp-buffer
+     (let ((tmp-buffer (current-buffer)))
+       (with-current-buffer buffer (copy-to-buffer tmp-buffer (point-min) (point-max))))
+     (while (re-search-forward "#import \"\\(.*\\)\"$" nil t)
+       (save-excursion
+         (goto-char (point-max))
+         (setq file (expand-file-name (match-string-no-properties 1) cwd))
+         (setq cwd (file-name-directory file))
+         (insert-file-contents file)))
+     (buffer-string))))
+
 (defun graphql-send-query ()
   "Send the current GraphQL query/mutation/subscription to server."
   (interactive)
@@ -269,7 +285,7 @@ Please install it and try again."))
     (let ((graphql-url url)
           (graphql-variables-file var))
 
-      (let* ((query (graphql-current-query))
+      (let* ((query (graphql-resolve-imports))
              (operation (graphql-current-operation))
              (variables (graphql-current-variables))
              (binders (graphql-current-binders))
