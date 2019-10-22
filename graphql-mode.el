@@ -226,11 +226,18 @@ Please install it and try again."))
         nil
       (replace-regexp-in-string "[({].*" "" (nth 1 tokens)))))
 
+(defun graphql-current-variables ()
+  (with-current-buffer (get-buffer-create "*GraphQL Variables*")
+    (save-excursion
+      (when (equalp (point-min) (point-max))
+        (insert "{}"))
+      (goto-char (point-min))
+      (json-read-object))))
+
 (defun graphql-current-binders ()
   (let ((next-query-pos (save-excursion (graphql-next-query)))
         binders)
     (save-excursion
-      (print next-query-pos)
       (while (re-search-forward "#[[:space:]]*\\$\\([[:alpha:]]*\\)[[:space:]]*:[[:space:]]*\\(.*\\)" next-query-pos t)
         (push (cons (intern (match-string-no-properties 1))
                     (car (read-from-string (match-string-no-properties 2))))
@@ -243,10 +250,9 @@ Please install it and try again."))
                         (t (cdr (assq it acc)))))
                 json path))
 
-(defun graphql-bind-variables (binders json)
+(defun graphql-bind-variables (binders variables json)
   (cl-loop for (var . path) in binders do
-           ;; (add-to-list 'graphql-variables (cons var (json-path-follow json path)))
-           (setf (alist-get var graphql-variables) (json-path-follow json path))))
+           (setf (alist-get var variables) (json-path-follow json path))))
 
 (define-minor-mode graphql-query-response-mode
   "Allows GraphQL query response buffer to be closed with (q)"
@@ -265,8 +271,9 @@ Please install it and try again."))
 
       (let* ((query (graphql-current-query))
              (operation (graphql-current-operation))
+             (variables (graphql-current-variables))
              (binders (graphql-current-binders))
-             (response (graphql--query query operation graphql-variables)))
+             (response (graphql--query query operation variables)))
         (with-current-buffer-window
          "*GraphQL*" 'display-buffer-pop-up-window nil
          (erase-buffer)
@@ -275,13 +282,23 @@ Please install it and try again."))
          (insert (json-encode (request-response-data response)))
          (json-pretty-print-buffer)
          (goto-char (point-min))
-         (graphql-bind-variables binders (json-read))
+         ;; Bind all of the variables
+         (cl-loop for (var . path) in binders do
+                  (setf (alist-get var variables) (json-path-follow (request-response-data response) path)))
          (goto-char (point-max))
          (insert "\n\n"
                  (propertize (request-response--raw-header response)
                              'face 'font-lock-comment-face
                              'font-lock-face 'font-lock-comment-face))
-         (graphql-query-response-mode))))
+         (graphql-query-response-mode))
+        (display-buffer-below-selected
+         (with-current-buffer (get-buffer-create "*GraphQL Variables*")
+           (erase-buffer)
+           (when (fboundp 'json-mode) (json-mode))
+           (insert (json-encode-alist variables))
+           (json-pretty-print-buffer)
+           (current-buffer))
+         '((window-height . 10)))))
     ;; If the query was successful, then save the value of graphql-url
     ;; in the current buffer (instead of the introduced local
     ;; binding).
